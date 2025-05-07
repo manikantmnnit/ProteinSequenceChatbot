@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 from source_file.tools import get_all_tools
+from Bio import pairwise2
+from Bio.pairwise2 import format_alignment
 
 # App configuration
 st.set_page_config(page_title="🔬 Protein Chatbot")
@@ -220,5 +222,80 @@ with tab2:
 
 
 with tab3:
-    st.header("An owl")
-    st.image("https://static.streamlit.io/examples/owl.jpg", width=200)
+    st.header("🔗 Protein Sequence Alignment + LLM Analysis")
+    
+    uploaded_file = st.file_uploader("📂 Upload FASTA file", type=["fasta", "fa", "txt"], key="alignment_uploader")
+    
+    if uploaded_file:
+        fasta_bytes = uploaded_file.read()
+        record_dict = SeqIO.to_dict(SeqIO.parse(io.StringIO(fasta_bytes.decode("utf-8")), "fasta"))
+        
+        if len(record_dict) < 2:
+            st.warning("Please upload a FASTA file with at least two sequences.")
+        else:
+            df = pd.DataFrame({
+                "ID": list(record_dict.keys()),
+                "Description": [rec.description for rec in record_dict.values()],
+                "Sequence": [str(rec.seq) for rec in record_dict.values()],
+            })
+
+            st.write("Available Sequences:")
+            st.dataframe(df)
+
+            seq_ids = df["ID"].tolist()
+            seq1_id = st.selectbox("Select First Sequence", seq_ids, index=0)
+            seq2_id = st.selectbox("Select Second Sequence", seq_ids, index=1)
+
+            seq1 = str(record_dict[seq1_id].seq)
+            seq2 = str(record_dict[seq2_id].seq)
+
+            alignments = pairwise2.align.globalxx(seq1, seq2)
+            best_alignment = alignments[0]
+            alignment_str = format_alignment(*best_alignment)
+
+            st.subheader("🔬 Best Alignment")
+            st.text(alignment_str)
+
+            # LLM Analysis
+            temperature = 0.3
+            max_tokens = 1024
+            llm = ChatGroq(model="llama3-8b-8192", temperature=temperature, max_tokens=max_tokens)
+
+            system_prompt = f"""
+            You are a protein bioinformatics expert.
+            The following is the alignment of two protein sequences:
+            ```
+            {alignment_str}
+            ```
+
+            Analyze the alignment result:
+            - Comment on similarity.
+            - Discuss conserved regions or gaps.
+            - Mention possible biological significance if obvious.
+            """
+
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=system_prompt),
+                MessagesPlaceholder(variable_name="chat_history"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+                HumanMessage(content="{user_input}")
+            ])
+
+            if "chat_history" not in st.session_state:
+                st.session_state.chat_history = []
+
+            user_input = st.text_input("💬 Ask a question about the alignment:")
+            if user_input:
+                with st.spinner("LLM analyzing alignment..."):
+                    tools = get_all_tools()
+                    response, updated_history = get_llm_response(
+                        llm, prompt, user_input, st.session_state.chat_history, tools
+                    )
+                    st.session_state.chat_history = updated_history
+                    st.success("🧪 Response:")
+                    st.markdown(response)
+
+            # Reset
+            if st.button("Reset Chat", key="reset_chat_tab3"):
+                st.session_state.chat_history = []
+                st.info("Chat history has been reset!")
